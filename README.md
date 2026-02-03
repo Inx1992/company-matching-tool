@@ -30,7 +30,7 @@ The sensitivity of the matching algorithm is controlled by the `threshold` param
 
 **Current Setting:** `threshold=82` (Optimal balance).
 
-To adjust the results, modify **line 15** in `main.py`:
+To adjust the matching sensitivity, find the run_pipeline() function in main.py and modify the threshold value (currently set to 82):
 
 ```python
 match_results = find_best_matches(d1_clean, d2_clean, threshold=82)
