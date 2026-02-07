@@ -1,79 +1,71 @@
 # Company Data Matching Tool
 
-A robust Python-based solution for merging and matching company records across disparate datasets. This tool uses advanced fuzzy string matching logic combined with multi-layer geographic verification (Address, ZIP, City) to ensure high data reliability.
+A professional Python-based solution for entity resolution and branch-aware matching across disparate datasets.
 
 ## 📁 Project Structure
 
-- `main.py`: Entry point orchestrating the pipeline, normalization, and metrics reporting.
-- `src/clean.py`: Logic for structural data preparation and column mapping.
-- `src/match.py`: Implementation of fuzzy matching using `rapidfuzz` and geographic overlap logic.
+- `main.py`: Entry point orchestrating the pipeline and generating JSON analytics.
+- `src/clean.py`: Advanced normalization (Regex-based name cleaning, ZIP standardization).
+- `src/match.py`: **Core Engine** featuring tiered validation logic (Fuzzy Matching + Geo-Verification).
 - `data/`: Source CSV files (`company_dataset_1.csv` and `company_dataset_2.csv`).
-- `output/`: Results including `merged_companies.csv` and `metrics.json`.
+- `output/`: High-fidelity results (`merged_companies.csv`) and technical KPIs (`matching_metrics.json`).
 
-## 🛠 Matching Approach
+## 🛠 Advanced Matching Strategy (Tiered Logic)
 
-The tool employs a multi-stage approach to Entity Resolution:
+Unlike standard fuzzy matching, this tool uses a **conditional verification pipeline** to eliminate False Positives:
 
-1. **Structural Normalization**: Consolidation of multi-line addresses (Street 1-3) into a single string.
-2. **Deep Text Cleaning**: Removal of legal suffixes (Inc, Ltd, Corp, LLC) and special characters using Regex to isolate the "core" company name.
-3. **Fuzzy Scoring**: Utilizing `token_sort_ratio` which is resilient to word reordering (e.g., "Plumbing Division 25" vs "Division 25 Plumbing").
-4. **Geographic Validation**: A secondary verification layer that checks for overlaps in City, ZIP, and Street names.
+1.  **Tier 1: Branch/Corporate Match (Score 95-100)**
+    - High string similarity allows for matching even across different cities (identifying corporate branches).
+2.  **Tier 2: High Confidence Match (Score 85-94)**
+    - Requires at least one geographic overlap (City, ZIP, or Street) to confirm the match.
+3.  **Tier 3: Low Similarity Match (Score 60-84)**
+    - Strict requirement: Match is only accepted if the **Street** is identical OR both **City and ZIP** match perfectly. This "pulls in" valid records with significant typos.
 
-## 🔍 Data Quality Issues Found
+## 🔍 Data Quality Issues Handled
 
-During analysis of the source datasets, several critical issues were identified and handled:
+- **Trailing Padding**: Handled fixed-width string noise from Dataset 2.
+- **Branch Specificity**: Identified location-specific suffixes in brackets (e.g., "Company Inc. (Toronto Branch)").
+- **Address Fragmentation**: Aggregated multiple address lines into a searchable "street_compare" field.
+- **Postal Code Noise**: Normalized "M1M 1M1" vs "M1M1M1" for 1:1 comparison.
 
-- **Fixed-width Padding**: Dataset 2 contained company names with significant trailing spaces.
-- **Suffix Variations**: Inconsistent legal entity descriptors (e.g., "Limited" vs "Ltd").
-- **Postal Code Inconsistency**: Differences in spacing (e.g., "M6L 3C1" vs "M6L3C1").
-- **Address Fragmentation**: Primary location data split across different numbers of columns (2 in D1, 3 in D2).
+## 📊 Performance Metrics (Current Run)
 
-## ⚙️ Transformations Applied
+The latest execution achieved a high-quality linkage with the following breakdown:
 
-- **Regex Normalization**: All names converted to uppercase, stripped of legal entities, and cleared of non-alphanumeric noise.
-- **ZIP Stripping**: Removal of all whitespace from postal codes to ensure a 1:1 match.
-- **Address Aggregation**: Smart joining of address fields with null-handling to prevent "hanging commas".
-- **Fuzzy Thresholding**: Optimized threshold of **82** to catch variations like "TX Mechanical" vs "VTN Mechanical".
-
-## 📊 Calculated Metrics
-
-The tool calculates and exports the following KPIs to `output/metrics.json`:
-
-- **Match Rate**: % of Dataset 1 companies successfully linked to Dataset 2.
-- **Unmatched Records**: % of companies remaining unique to Dataset 1.
-- **One-to-Many Matches**: % of records with multiple potential entries (duplicates).
-- **Average Confidence Score**: Overall reliability of the matched pairs.
+- **Match Rate**: **52.57%** (Optimized via Tier 3 logic).
+- **Branch Clusters**: **47 groups** identified (One-to-Many matches).
+- **Location Strength**: **~60%** of matches are "Full Overlap" (City + ZIP + Street).
+- **Confidence**: **85%** of matches are Exact Name matches.
 
 ## 🚀 Installation & Usage
 
-1. Ensure you have Python 3.8+ installed.
-2. Install dependencies:
+1. Install dependencies:
    ```bash
    pip install pandas rapidfuzz
-   Run the tool:
    ```
+2. Run the pipeline:
 
-Bash
+```Bash
 python main.py
+```
 
 ## ⚙️ Threshold Configuration (Tuning)
 
-The sensitivity is controlled by the threshold parameter in main.py:
+The sensitivity is controlled by the `threshold` parameter in `main.py`. Based on the multi-layer logic in `src/match.py`, the behavior is as follows:
+
+- **90-100 (Strict)**: Extremely low risk of errors. Ideal for clean datasets where legal forms are consistent.
+- **82-89 (Balanced)**: Good for handling minor typos and suffix differences. Requires at least one geographic overlap.
+- **60-81 (Verified Loose)**: Current setting. Catches significant variations (e.g., "TX Mechanical" vs "VTN Mechanical") but **enforces mandatory street/postal verification** to maintain precision.
 
 ```python
-match_results = find_best_matches(d1_clean, d2_clean, threshold=82)
+# Sensitivity control in main.py
+match_results = find_best_matches(d1, d2, threshold=60)
 ```
-
-- **90-100 (Strict)**: Low risk of errors, but might miss companies with different legal forms.
-
-- **82 (Balanced)**: Current default. Optimal balance for handling typos and suffix differences.
-
-- **70-80 (Loose)**: Catches more variations but requires manual audit of overlapping_locations.
 
 ## 📝 Technical Notes
 
-A match is considered Highly Reliable if:
+- **A match is considered Highly Reliable if**:
 
-The confidence_score is > 85.
+* The confidence_score is > 85 (High name similarity).
 
-OR the overlapping_locations contains at least two geographic matches (e.g., "city, zip").
+* OR the overlapping_locations contains at least two geographic matches (e.g., "city, zip") or a confirmed "street".

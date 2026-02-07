@@ -1,0 +1,22 @@
+{
+    "overall": {
+        "match_rate": 52.57,
+        "unmatched_rate": 47.43,
+        "one_to_many_cases": 47,
+        "one_to_many_percentage": 4.48
+    },
+    "score_distribution": {
+        "perfect": 471,
+        "high": 26,
+        "borderline": 55
+    },
+    "match_quality": {
+        "exact_names_percent": 85.33,
+        "fuzzy_names_percent": 14.67
+    },
+    "location_verification": {
+        "full_overlap_percent": 59.06,
+        "partial_overlap_percent": 32.97,
+        "name_only_percent": 7.97
+    }
+}

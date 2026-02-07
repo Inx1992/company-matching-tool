@@ -1,99 +1,112 @@
 import pandas as pd
-import os, json
+import json, os
 from src.clean import prepare_datasets
 from src.match import find_best_matches
 
 def run_pipeline():
-    try:
-        print("Step 1: Loading datasets...")
-        df1 = pd.read_csv('data/company_dataset_1.csv', dtype=str).fillna('')
-        df2 = pd.read_csv('data/company_dataset_2.csv', dtype=str).fillna('')
-    except FileNotFoundError: 
-        return print("Error: Files not found. Ensure CSV files are in /data folder.")
-
-    print("Step 2: Preparing location lists and cleaning strings...")
-    df1_temp, df2_temp = df1.copy(), df2.copy()
-    df1_temp['addr'] = df1_temp[['sStreet1', 'sCity', 'sProvState', 'sPostalZip']].agg(', '.join, axis=1).str.strip(', ')
-    d1_map = df1_temp.groupby('custnmbr')['addr'].apply(lambda x: " | ".join(filter(None, x.unique()))).to_dict()
-    df2_temp['addr'] = df2_temp[['address1', 'city', 'state', 'zip']].agg(', '.join, axis=1).str.strip(', ')
-    d2_map = df2_temp.groupby('custnmbr')['addr'].apply(lambda x: " | ".join(filter(None, x.unique()))).to_dict()
-
-    print("Step 3: Cleaning and normalization...")
-    d1_clean, d2_clean = prepare_datasets(df1, df2)
-
-    print("Step 4: Performing matching (Threshold: 82)...")
-    results = find_best_matches(d1_clean, d2_clean, threshold=82)
+    print("Step 1: Loading & Cleaning...")
+    df1_raw = pd.read_csv('data/company_dataset_1.csv', dtype=str).fillna('')
+    df2_raw = pd.read_csv('data/company_dataset_2.csv', dtype=str).fillna('')
     
-    final_rows = []
-    for res in results:
-        row = df1.iloc[res['d1_index']].to_dict()
-        cid1 = row['custnmbr']
-        row.update({
-            'dataset1_locations_list': d1_map.get(cid1, ""), 
-            'match_name_d2': "NO MATCH", 'confidence_score': 0, 
-            'overlapping_locations': "", 'dataset2_locations_list': ""
-        })
-        if res['d2_index'] is not None:
-            d2_row = df2.iloc[res['d2_index']]
-            row.update({
-                'match_name_d2': str(d2_row['custname']).strip(), 
-                'confidence_score': res['score'], 
-                'overlapping_locations': res['overlaps'], 
-                'dataset2_locations_list': d2_map.get(d2_row['custnmbr'], "")
-            })
-        final_rows.append(row)
-
-    output_df = pd.DataFrame(final_rows)
-    matched = output_df[output_df['match_name_d2'] != "NO MATCH"]
-    total = len(df1)
+    d1, d2 = prepare_datasets(df1_raw, df2_raw)
     
-    m_count = matched['custnmbr'].nunique()
-    m_rate = (m_count / total) * 100
+    d1_loc_map = d1.groupby('custnmbr')['addr_full'].apply(lambda x: " | ".join(filter(None, x.unique()))).to_dict()
+    d2_loc_map = d2['addr_full'].to_dict()
+    d2_name_map = d2['name'].to_dict()
+
+    print("Step 2: Matching (Branch-aware logic)...")
+    match_results = find_best_matches(d1, d2)
+    res_df = pd.DataFrame(match_results)
+
+    print("Step 3: Building Final Dataset & Metrics...")
+    output = pd.DataFrame()
+    output['custnmbr'] = d1['custnmbr']
+    output['custname'] = d1['name']
+    output['match_name_d2'] = res_df['d2_index'].map(d2_name_map).fillna("NO MATCH")
+    output['dataset1_locations_list'] = d1['custnmbr'].map(d1_loc_map)
+    output['dataset2_locations_list'] = res_df['d2_index'].map(d2_loc_map).fillna("")
+    output['overlapping_locations'] = res_df['overlapping_locations']
+    output['confidence_score'] = res_df['confidence_score']
+
+    total_d1 = len(output)
+    matched_df = output[output['match_name_d2'] != "NO MATCH"].copy()
+    
+    m_rate = (len(matched_df) / total_d1) * 100
     u_rate = 100 - m_rate
-    otm_count = (matched['custnmbr'].value_counts() > 1).sum()
-    otm_perc = (otm_count / total) * 100
-    avg_conf = matched['confidence_score'].mean() if not matched.empty else 0
+    
+    match_counts = matched_df['match_name_d2'].value_counts()
+    otm_count = (match_counts > 1).sum()
+    otm_perc = (otm_count / total_d1) * 100
 
-    perf_c = len(matched[matched['confidence_score'] == 100])
-    high_c = len(matched[(matched['confidence_score'] >= 90) & (matched['confidence_score'] < 100)])
-    bord_c = len(matched[(matched['confidence_score'] >= 82) & (matched['confidence_score'] < 90)])
+    perfect = len(matched_df[matched_df['confidence_score'] == 100])
+    high = len(matched_df[(matched_df['confidence_score'] >= 90) & (matched_df['confidence_score'] < 100)])
+    borderline = len(matched_df[(matched_df['confidence_score'] >= 60) & (matched_df['confidence_score'] < 90)])
 
-    v_counts = matched['overlapping_locations'].apply(lambda x: len(x.split(', ')) if x else 0)
-    f_v_p = (v_counts == 3).sum() / len(matched) * 100 if len(matched) > 0 else 0
-    p_v_p = (v_counts.isin([1, 2])).sum() / len(matched) * 100 if len(matched) > 0 else 0
-    n_v_p = (v_counts == 0).sum() / len(matched) * 100 if len(matched) > 0 else 0
+    exact_names = (perfect / len(matched_df)) * 100 if not matched_df.empty else 0
+    fuzzy_names = 100 - exact_names
 
-    metrics = {
-        "summary": {"match_rate": round(m_rate, 2), "unmatched": round(u_rate, 2), "otm_cases": int(otm_count), "avg_score": round(avg_conf, 2)},
-        "distribution": {"perfect": perf_c, "high": high_c, "borderline": bord_c},
-        "quality": {"exact_p": round(perf_c/len(matched)*100, 2), "fuzzy_p": round((len(matched)-perf_c)/len(matched)*100, 2)},
-        "verification": {"full_p": round(f_v_p, 2), "partial_p": round(p_v_p, 2), "none_p": round(n_v_p, 2)}
+    def count_locs(s): return len(s.split(',')) if s else 0
+    loc_counts = matched_df['overlapping_locations'].apply(count_locs)
+    
+    full_loc = (len(matched_df[loc_counts >= 3]) / len(matched_df)) * 100 if not matched_df.empty else 0
+    partial_loc = (len(matched_df[(loc_counts > 0) & (loc_counts < 3)]) / len(matched_df)) * 100 if not matched_df.empty else 0
+    name_only = (len(matched_df[loc_counts == 0]) / len(matched_df)) * 100 if not matched_df.empty else 0
+
+    print(f"\n" + "="*50)
+    print(f"{'FINAL MATCHING QUALITY REPORT':^50}")
+    print("="*50)
+    print(f"Match Rate:          {m_rate:.2f}%")
+    print(f"Unmatched Records:   {u_rate:.2f}%")
+    print(f"One-to-many matches: {otm_perc:.2f}% ({otm_count} branch clusters)")
+    
+    print(f"\nScore Distribution:")
+    print(f" - Perfect (100%):   {perfect} matches")
+    print(f" - High (90-99%):    {high} matches")
+    print(f" - Borderline (60%): {borderline} matches")
+    
+    print(f"\nMatch Quality:")
+    print(f" - Exact Name Matches: {exact_names:.2f}%")
+    print(f" - Fuzzy Name Matches: {fuzzy_names:.2f}%")
+    
+    print(f"\nLocation Verification Strength:")
+    print(f" - Full (City+ZIP+Street): {full_loc:.2f}%")
+    print(f" - Partial:                {partial_loc:.2f}%")
+    print(f" - Name only (No overlap): {name_only:.2f}%")
+    print("="*50)
+
+    metrics_data = {
+        "overall": {
+            "match_rate": round(m_rate, 2),
+            "unmatched_rate": round(u_rate, 2),
+            "one_to_many_cases": int(otm_count),
+            "one_to_many_percentage": round(otm_perc, 2)
+        },
+        "score_distribution": {
+            "perfect": perfect,
+            "high": high,
+            "borderline": borderline
+        },
+        "match_quality": {
+            "exact_names_percent": round(exact_names, 2),
+            "fuzzy_names_percent": round(fuzzy_names, 2)
+        },
+        "location_verification": {
+            "full_overlap_percent": round(full_loc, 2),
+            "partial_overlap_percent": round(partial_loc, 2),
+            "name_only_percent": round(name_only, 2)
+        }
     }
 
-    print(f"\nFINAL METRICS:")
-    print(f"Match Rate: {m_rate:.2f}%")
-    print(f"Unmatched: {u_rate:.2f}%")
-    print(f"One-to-many matches: {otm_perc:.2f}% ({otm_count} cases)")
-    print(f"Avg Confidence Score: {avg_conf:.2f}%")
-    print(f"\nScore Distribution:")
-    print(f"   - Perfect (100%): {perf_c} matches")
-    print(f"   - High (90-99%): {high_c} matches")
-    print(f"   - Borderline (82-89%): {bord_c} matches")
-    print(f"\nMatch Quality:")
-    print(f"   - Exact Name Matches: {metrics['quality']['exact_p']}%")
-    print(f"   - Fuzzy Name Matches: {metrics['quality']['fuzzy_p']}%")
-    print(f"\nLocation Verification Strength:")
-    print(f"   - Full (City+ZIP+Street): {metrics['verification']['full_p']}%")
-    print(f"   - Partial: {metrics['verification']['partial_p']}%")
-    print(f"   - Name only (No overlap): {metrics['verification']['none_p']}%")
-
     os.makedirs('output', exist_ok=True)
-    with open('output/metrics.json', 'w', encoding='utf-8') as f: json.dump(metrics, f, indent=4)
-    output_df.to_csv('output/merged_companies.csv', index=False)
     
-    print(f"\n Done!")
-    print(f" Metrics saved to: output/metrics.json")
-    print(f" Results saved to: output/merged_companies.csv")
+    output.to_csv('output/merged_companies.csv', index=False)
+    
+    with open('output/matching_metrics.json', 'w', encoding='utf-8') as f:
+        json.dump(metrics_data, f, indent=4, ensure_ascii=False)
+
+    print(f"\nDone! Results saved to:")
+    print(f" - CSV:  output/merged_companies.csv")
+    print(f" - JSON: output/matching_metrics.json")
 
 if __name__ == "__main__":
     run_pipeline()
